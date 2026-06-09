@@ -71,7 +71,32 @@ export async function createIconItemFromFile(file: File): Promise<IconItem> {
     height: size.height,
     dataUrl,
     addedAt: Date.now(),
+    tags: [],
   };
+}
+
+export function getFileExtensionFromDataUrl(dataUrl: string): string {
+  const match = dataUrl.match(/^data:image\/([a-zA-Z0-9+.-]+);/);
+  if (match) {
+    const ext = match[1].toLowerCase();
+    if (ext === 'svg+xml') return 'svg';
+    if (ext === 'jpeg') return 'jpg';
+    return ext;
+  }
+  return 'png';
+}
+
+export function dataUrlToBlobWithType(dataUrl: string): Blob {
+  const arr = dataUrl.split(',');
+  const mimeMatch = arr[0].match(/:(.*?);/);
+  const mime = mimeMatch ? mimeMatch[1] : 'image/png';
+  const bstr = atob(arr[1]);
+  let n = bstr.length;
+  const u8arr = new Uint8Array(n);
+  while (n--) {
+    u8arr[n] = bstr.charCodeAt(n);
+  }
+  return new Blob([u8arr], { type: mime });
 }
 
 export async function createIconItemsFromFiles(
@@ -82,6 +107,13 @@ export async function createIconItemsFromFiles(
 }
 
 export function iconItemToMeta(item: IconItem): IconMeta {
-  const { dataUrl: _, ...meta } = item;
-  return meta;
+  return {
+    id: item.id,
+    name: item.name,
+    originalName: item.originalName,
+    width: item.width,
+    height: item.height,
+    addedAt: item.addedAt,
+    tags: item.tags,
+  };
 }

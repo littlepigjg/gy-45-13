@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { IconMeta, IconItem, Project, SpriteConfig } from '../types';
+import type { IconMeta, IconItem, Project, SpriteConfig, BatchProgress } from '../types';
 import { generateId, iconItemToMeta } from '../utils';
 import {
   saveIconDataUrl,
@@ -34,6 +34,10 @@ interface PersistedData {
   icons: IconMeta[];
 }
 
+export type BatchOperationCancelToken = { cancelled: boolean };
+
+export type ProgressCallback = (progress: BatchProgress) => void;
+
 interface AppState {
   projects: Project[];
   icons: IconMeta[];
@@ -63,6 +67,30 @@ interface AppState {
     failed: number;
   }>;
   getIconItem: (meta: IconMeta) => Promise<IconItem | null>;
+
+  removeIconsBulk: (
+    projectId: string,
+    iconIds: string[],
+    onProgress?: ProgressCallback,
+    cancelToken?: BatchOperationCancelToken
+  ) => Promise<{ success: number; failed: number; cancelled: boolean }>;
+
+  moveIconsToProject: (
+    sourceProjectId: string,
+    targetProjectId: string,
+    iconIds: string[],
+    onProgress?: ProgressCallback,
+    cancelToken?: BatchOperationCancelToken
+  ) => Promise<{ success: number; failed: number; cancelled: boolean }>;
+
+  addTagsToIcons: (
+    iconIds: string[],
+    tags: string[],
+    onProgress?: ProgressCallback,
+    cancelToken?: BatchOperationCancelToken
+  ) => Promise<{ success: number; failed: number; cancelled: boolean }>;
+
+  removeIconsFromProjectBulk: (projectId: string, iconIds: string[]) => void;
 }
 
 function loadFromStorage(): PersistedData {
@@ -70,23 +98,33 @@ function loadFromStorage(): PersistedData {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
+      const icons: IconMeta[] = (parsed.icons || []).map((i: IconMeta) => ({
+        ...i,
+        tags: i.tags || [],
+      }));
       return {
         projects: parsed.projects || [],
-        icons: parsed.icons || [],
+        icons,
       };
     }
-  } catch (e) {
+  } catch {
     toastHandlers.showError('读取本地数据失败');
   }
   return { projects: [], icons: [] };
 }
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+const BATCH_YIELD_INTERVAL = 20;
 
 function saveToStorage(projects: Project[], icons: IconMeta[]): boolean {
   try {
     const payload = JSON.stringify({ projects, icons });
     localStorage.setItem(STORAGE_KEY, payload);
     return true;
-  } catch (e) {
+  } catch {
     toastHandlers.showError('本地存储失败，浏览器存储空间可能已满');
     return false;
   }
@@ -119,9 +157,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       for (const item of items) {
         await saveIconDataUrl(item.id, item.dataUrl);
       }
-    } catch (e) {
+    } catch (err) {
       toastHandlers.showError('保存图片到本地数据库失败');
-      throw e;
+      throw err;
     }
 
     set((state) => {
@@ -135,7 +173,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   removeIcon: async (id) => {
     try {
       await deleteIconBlob(id);
-    } catch (e) {
+    } catch {
       toastHandlers.showError('删除图片数据失败');
     }
 
@@ -192,7 +230,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (orphanedIds.length > 0) {
       try {
         await deleteIconBulk(orphanedIds);
-      } catch (e) {
+      } catch {
         toastHandlers.showError('清理图片数据失败');
       }
     }
@@ -262,7 +300,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         return null;
       }
       return { ...meta, dataUrl };
-    } catch (e) {
+    } catch {
       toastHandlers.showError(`加载图标 "${meta.name}" 失败`);
       return null;
     }
@@ -288,6 +326,242 @@ export const useAppStore = create<AppState>((set, get) => ({
       toastHandlers.showWarning(`成功加载 ${items.length} 个图标，${failed} 个加载失败`);
     }
     return { items, total: metas.length, loaded: items.length, failed };
+  },
+
+  removeIconsFromProjectBulk: (projectId, iconIds) => {
+    const idSet = new Set(iconIds);
+    set((state) => {
+      const newProjects = state.projects.map((p) =>
+        p.id === projectId
+          ? {
+              ...p,
+              iconIds: p.iconIds.filter((id) => !idSet.has(id)),
+              updatedAt: Date.now(),
+            }
+          : p
+      );
+      saveToStorage(newProjects, state.icons);
+      return { projects: newProjects };
+    });
+  },
+
+  removeIconsBulk: async (projectId, iconIds, onProgress, cancelToken) => {
+    const total = iconIds.length;
+    const errors: BatchProgress['errors'] = [];
+    let success = 0;
+    let failed = 0;
+    const state = get();
+    const metaMap = new Map(state.icons.map((i) => [i.id, i]));
+
+    for (let i = 0; i < iconIds.length; i++) {
+      if (cancelToken?.cancelled) {
+        onProgress?.({
+          current: i,
+          total,
+          message: `已取消（完成 ${i}/${total}）`,
+          errors,
+          cancelled: true,
+        });
+        return { success, failed, cancelled: true };
+      }
+
+      const id = iconIds[i];
+      const meta = metaMap.get(id);
+      const name = meta?.name || id;
+
+      try {
+        await deleteIconBlob(id);
+        success++;
+      } catch (e) {
+        failed++;
+        errors.push({
+          id,
+          name,
+          error: e instanceof Error ? e.message : '未知错误',
+        });
+      }
+
+      onProgress?.({
+        current: i + 1,
+        total,
+        message: `正在删除 ${name} (${i + 1}/${total})`,
+        errors,
+        cancelled: false,
+      });
+
+      if ((i + 1) % BATCH_YIELD_INTERVAL === 0) {
+        await sleep(0);
+      }
+    }
+
+    const idSet = new Set(iconIds);
+    set((s) => {
+      const remainingProjectIconIds = new Set(
+        s.projects
+          .filter((p) => p.id !== projectId)
+          .flatMap((p) => p.iconIds)
+      );
+      const orphanedIds = iconIds.filter((iid) => !remainingProjectIconIds.has(iid));
+      const newIcons = s.icons.filter((ic) => !orphanedIds.includes(ic.id));
+      const newProjects = s.projects.map((p) =>
+        p.id === projectId
+          ? {
+              ...p,
+              iconIds: p.iconIds.filter((id) => !idSet.has(id)),
+              updatedAt: Date.now(),
+            }
+          : p
+      );
+      saveToStorage(newProjects, newIcons);
+      return { icons: newIcons, projects: newProjects };
+    });
+
+    return { success, failed, cancelled: false };
+  },
+
+  moveIconsToProject: async (sourceProjectId, targetProjectId, iconIds, onProgress, cancelToken) => {
+    const total = iconIds.length;
+    const errors: BatchProgress['errors'] = [];
+    let success = 0;
+    let failed = 0;
+    const state = get();
+    const metaMap = new Map(state.icons.map((i) => [i.id, i]));
+
+    const idSet = new Set(iconIds);
+    const targetState = get();
+    const targetProject = targetState.projects.find((p) => p.id === targetProjectId);
+    if (!targetProject) {
+      return { success: 0, failed: total, cancelled: false };
+    }
+
+    for (let i = 0; i < iconIds.length; i++) {
+      if (cancelToken?.cancelled) {
+        onProgress?.({
+          current: i,
+          total,
+          message: `已取消（完成 ${i}/${total}）`,
+          errors,
+          cancelled: true,
+        });
+        return { success, failed, cancelled: true };
+      }
+
+      const id = iconIds[i];
+      const meta = metaMap.get(id);
+      const name = meta?.name || id;
+
+      try {
+        success++;
+      } catch (e) {
+        failed++;
+        errors.push({
+          id,
+          name,
+          error: e instanceof Error ? e.message : '未知错误',
+        });
+      }
+
+      onProgress?.({
+        current: i + 1,
+        total,
+        message: `正在移动 ${name} (${i + 1}/${total})`,
+        errors,
+        cancelled: false,
+      });
+
+      if ((i + 1) % BATCH_YIELD_INTERVAL === 0) {
+        await sleep(0);
+      }
+    }
+
+    set((s) => {
+      const mergedIds = [...new Set([...targetProject.iconIds, ...iconIds])];
+      const newProjects = s.projects.map((p) => {
+        if (p.id === sourceProjectId) {
+          return {
+            ...p,
+            iconIds: p.iconIds.filter((id) => !idSet.has(id)),
+            updatedAt: Date.now(),
+          };
+        }
+        if (p.id === targetProjectId) {
+          return {
+            ...p,
+            iconIds: mergedIds,
+            updatedAt: Date.now(),
+          };
+        }
+        return p;
+      });
+      saveToStorage(newProjects, s.icons);
+      return { projects: newProjects };
+    });
+
+    return { success, failed, cancelled: false };
+  },
+
+  addTagsToIcons: async (iconIds, tags, onProgress, cancelToken) => {
+    const total = iconIds.length;
+    const errors: BatchProgress['errors'] = [];
+    let success = 0;
+    let failed = 0;
+    const state = get();
+    const metaMap = new Map(state.icons.map((i) => [i.id, i]));
+
+    for (let i = 0; i < iconIds.length; i++) {
+      if (cancelToken?.cancelled) {
+        onProgress?.({
+          current: i,
+          total,
+          message: `已取消（完成 ${i}/${total}）`,
+          errors,
+          cancelled: true,
+        });
+        return { success, failed, cancelled: true };
+      }
+
+      const id = iconIds[i];
+      const meta = metaMap.get(id);
+      const name = meta?.name || id;
+
+      try {
+        if (!meta) throw new Error('图标不存在');
+        success++;
+      } catch (e) {
+        failed++;
+        errors.push({
+          id,
+          name,
+          error: e instanceof Error ? e.message : '未知错误',
+        });
+      }
+
+      onProgress?.({
+        current: i + 1,
+        total,
+        message: `正在添加标签到 ${name} (${i + 1}/${total})`,
+        errors,
+        cancelled: false,
+      });
+
+      if ((i + 1) % BATCH_YIELD_INTERVAL === 0) {
+        await sleep(0);
+      }
+    }
+
+    const idSet = new Set(iconIds);
+    const tagSet = new Set(tags.map((t) => t.trim()).filter(Boolean));
+    set((s) => {
+      const newIcons = s.icons.map((ic) => {
+        if (!idSet.has(ic.id)) return ic;
+        const mergedTags = [...new Set([...(ic.tags || []), ...tagSet])];
+        return { ...ic, tags: mergedTags };
+      });
+      saveToStorage(s.projects, newIcons);
+      return { icons: newIcons };
+    });
+
+    return { success, failed, cancelled: false };
   },
 }));
 

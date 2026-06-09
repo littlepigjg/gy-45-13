@@ -17,11 +17,13 @@ import {
   AlertCircle,
   RefreshCw,
   AlertTriangle,
+  Tag,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '@/store/useAppStore';
 import { createIconItemsFromFiles, formatDate, cn } from '@/utils';
 import { useToast } from '@/components/Toast';
+import BatchToolbar from '@/components/BatchToolbar';
 import type { IconItem, Project } from '@/types';
 
 export default function Library() {
@@ -122,7 +124,11 @@ export default function Library() {
   const filteredIcons = useMemo(() => {
     if (!searchQuery.trim()) return projectIcons;
     const q = searchQuery.toLowerCase();
-    return projectIcons.filter((i) => i.name.toLowerCase().includes(q));
+    return projectIcons.filter((i) => {
+      if (i.name.toLowerCase().includes(q)) return true;
+      if (i.tags && i.tags.some((t) => t.toLowerCase().includes(q))) return true;
+      return false;
+    });
   }, [projectIcons, searchQuery]);
 
   const handleUpload = async (files: FileList | File[]) => {
@@ -172,14 +178,6 @@ export default function Library() {
     });
   };
 
-  const selectAll = () => {
-    if (selectedIconIds.size === filteredIcons.length) {
-      setSelectedIconIds(new Set());
-    } else {
-      setSelectedIconIds(new Set(filteredIcons.map((i) => i.id)));
-    }
-  };
-
   const generateFromProject = () => {
     if (!activeProject || projectIcons.length === 0) return;
     setGeneratorIcons(projectIcons);
@@ -187,17 +185,14 @@ export default function Library() {
     navigate('/generator');
   };
 
-  const deleteSelected = () => {
-    if (!activeProjectId || selectedIconIds.size === 0) return;
-    selectedIconIds.forEach((id) => removeIconFromProject(activeProjectId, id));
-    setProjectIcons((prev) => prev.filter((i) => !selectedIconIds.has(i.id)));
-    setLoadStats((prev) => prev ? {
-      ...prev,
-      total: prev.total - selectedIconIds.size,
-      loaded: prev.loaded - selectedIconIds.size,
-    } : null);
-    setSelectedIconIds(new Set());
-  };
+  const refreshIcons = useCallback(() => {
+    setLoadAttempt((n) => n + 1);
+  }, []);
+
+  const selectedIcons = useMemo(
+    () => projectIcons.filter((i) => selectedIconIds.has(i.id)),
+    [projectIcons, selectedIconIds]
+  );
 
   const handleDeleteProject = async (p: Project) => {
     if (!confirm(`删除项目 "${p.name}"?`)) return;
@@ -338,6 +333,22 @@ export default function Library() {
               <div className="text-[10px] text-slate-500 font-mono mt-0.5">
                 {icon.width}×{icon.height}
               </div>
+              {icon.tags && icon.tags.length > 0 && (
+                <div className="flex items-center gap-1 mt-1.5 flex-wrap">
+                  <Tag className="w-2.5 h-2.5 text-neon-cyan shrink-0" />
+                  {icon.tags.slice(0, 3).map((tag) => (
+                    <span
+                      key={tag}
+                      className="text-[9px] px-1 py-0.5 rounded bg-neon-cyan/10 text-neon-cyan border border-neon-cyan/20 font-mono truncate max-w-[60px]"
+                    >
+                      {tag}
+                    </span>
+                  ))}
+                  {icon.tags.length > 3 && (
+                    <span className="text-[9px] text-slate-500 font-mono">+{icon.tags.length - 3}</span>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         ))}
@@ -505,6 +516,15 @@ export default function Library() {
             </div>
           ) : (
             <>
+              <BatchToolbar
+                selectedIconIds={selectedIconIds}
+                selectedIcons={selectedIcons}
+                activeProjectId={activeProjectId}
+                onSelectionChange={setSelectedIconIds}
+                onRefreshIcons={refreshIcons}
+                totalCount={filteredIcons.length}
+              />
+
               <div className="px-4 py-3 border-b border-ink-700/50 flex items-center gap-3">
                 <div className="relative flex-1 max-w-sm">
                   <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
@@ -537,27 +557,6 @@ export default function Library() {
                       </button>
                     )}
                   </div>
-                )}
-
-                {filteredIcons.length > 0 && (
-                  <button
-                    onClick={selectAll}
-                    className="btn-ghost btn !px-3 !py-1.5 text-xs"
-                  >
-                    {selectedIconIds.size === filteredIcons.length ? '取消全选' : '全选'}
-                  </button>
-                )}
-
-                {selectedIconIds.size > 0 && (
-                  <>
-                    <span className="chip bg-neon-cyan/10 text-neon-cyan border border-neon-cyan/20">
-                      已选 {selectedIconIds.size}
-                    </span>
-                    <button onClick={deleteSelected} className="btn btn-danger !py-1.5 text-xs">
-                      <Trash2 className="w-3.5 h-3.5" />
-                      删除
-                    </button>
-                  </>
                 )}
 
                 <div className="flex-1" />

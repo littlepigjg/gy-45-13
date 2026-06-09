@@ -27,6 +27,7 @@ function makeIcon(id: string, name: string, r: number, g: number, b: number): Ic
     height: 1,
     addedAt: 0,
     dataUrl: make1x1Png(r, g, b),
+    tags: [],
   };
 }
 

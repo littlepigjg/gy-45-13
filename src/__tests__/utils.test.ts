@@ -55,6 +55,7 @@ describe('Utility functions', () => {
         height: 24,
         addedAt: 123456,
         dataUrl: 'data:image/png;base64,xxx',
+        tags: ['ui', 'home'],
       };
       const meta = iconItemToMeta(item);
       expect(meta).toEqual({
@@ -64,6 +65,7 @@ describe('Utility functions', () => {
         width: 24,
         height: 24,
         addedAt: 123456,
+        tags: ['ui', 'home'],
       });
       expect((meta as any).dataUrl).toBeUndefined();
     });

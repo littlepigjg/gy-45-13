@@ -5,10 +5,19 @@ export interface IconMeta {
   width: number;
   height: number;
   addedAt: number;
+  tags: string[];
 }
 
 export interface IconItem extends IconMeta {
   dataUrl: string;
+}
+
+export interface BatchProgress {
+  current: number;
+  total: number;
+  message: string;
+  errors: { id: string; name: string; error: string }[];
+  cancelled: boolean;
 }
 
 export interface Project {
